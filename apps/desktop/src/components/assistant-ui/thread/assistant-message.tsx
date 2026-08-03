@@ -30,6 +30,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
+import { $currentModel, $currentProvider } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 
 interface MessageActionProps {
@@ -236,22 +237,34 @@ const MessageAge: FC = () => {
   )
 }
 
-const AssistantFooter: FC<MessageActionProps> = props => (
-  <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
-    <BranchPickerPrimitive.Root
-      className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
-      hideWhenSingleBranch
-    >
-      <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
-        <Codicon name="chevron-left" size="0.875rem" />
-      </BranchPickerPrimitive.Previous>
-      <span className="tabular-nums">
-        <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
-      </span>
-      <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
-        <Codicon name="chevron-right" size="0.875rem" />
-      </BranchPickerPrimitive.Next>
-    </BranchPickerPrimitive.Root>
-    <AssistantActionBar {...props} />
-  </div>
-)
+const AssistantFooter: FC<MessageActionProps> = props => {
+  const model = useStore($currentModel)
+  const provider = useStore($currentProvider)
+  const shortModel = model.includes('/') ? model.split('/').pop() : model
+  const modelLabel = shortModel && provider ? `${provider}/${shortModel}` : shortModel || provider || ''
+
+  return (
+    <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
+      {modelLabel && (
+        <span className="text-[0.625rem] leading-none text-muted-foreground/40 select-none">
+          {modelLabel}
+        </span>
+      )}
+      <BranchPickerPrimitive.Root
+        className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
+        hideWhenSingleBranch
+      >
+        <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+          <Codicon name="chevron-left" size="0.875rem" />
+        </BranchPickerPrimitive.Previous>
+        <span className="tabular-nums">
+          <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
+        </span>
+        <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+          <Codicon name="chevron-right" size="0.875rem" />
+        </BranchPickerPrimitive.Next>
+      </BranchPickerPrimitive.Root>
+      <AssistantActionBar {...props} />
+    </div>
+  )
+}

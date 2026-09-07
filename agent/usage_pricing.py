@@ -566,6 +566,17 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # Google Gemini
     (
         "google",
+        "gemini-3.8-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.50"),
+        output_cost_per_million=Decimal("7.50"),
+        cache_read_cost_per_million=Decimal("0.15"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/gemini-api/docs/pricing",
+        pricing_version="google-pricing-2026-07-28",
+    ),
+    (
+        "google",
         "gemini-3.6-flash",
     ): PricingEntry(
         input_cost_per_million=Decimal("1.50"),

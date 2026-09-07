@@ -7343,6 +7343,13 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
             return {"logged_in": has_aws_credentials(), "provider": target}
         except ImportError:
             return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
+    # Google Vertex AI — check via vertex adapter credentials
+    if pconfig and pconfig.auth_type == "vertex":
+        try:
+            from agent.vertex_adapter import has_vertex_credentials
+            return {"logged_in": has_vertex_credentials(), "provider": target}
+        except ImportError:
+            return {"logged_in": False, "provider": target, "error": "vertex_adapter not available"}
     return {"logged_in": False}
 
 

@@ -66,26 +66,30 @@ def _vertex_config() -> dict:
 
 
 def _resolve_region(explicit: Optional[str] = None) -> str:
-    """Region precedence: explicit arg > VERTEX_REGION env > config.yaml > default."""
+    """Region precedence: explicit arg > VERTEX_REGION / VERTEX_LOCATION env > config.yaml > default."""
     if explicit:
         return explicit
-    env_region = (_get_secret("VERTEX_REGION") or "").strip()
-    if env_region:
-        return env_region
-    cfg_region = str(_vertex_config().get("region") or "").strip()
+    for env_var in ("VERTEX_REGION", "VERTEX_LOCATION"):
+        env_region = (_get_secret(env_var) or "").strip()
+        if env_region:
+            return env_region
+    vcfg = _vertex_config()
+    cfg_region = str(vcfg.get("region") or vcfg.get("location") or "").strip()
     return cfg_region or DEFAULT_REGION
 
 
 def _resolve_project_override() -> Optional[str]:
-    """Project-ID override precedence: VERTEX_PROJECT_ID env > config.yaml.
+    """Project-ID override precedence: VERTEX_PROJECT_ID / VERTEX_PROJECT / GOOGLE_CLOUD_PROJECT env > config.yaml.
 
     Returns None when neither is set (the credentials' embedded project_id
     is used in that case).
     """
-    env_project = (_get_secret("VERTEX_PROJECT_ID") or "").strip()
-    if env_project:
-        return env_project
-    cfg_project = str(_vertex_config().get("project_id") or "").strip()
+    for env_var in ("VERTEX_PROJECT_ID", "VERTEX_PROJECT", "GOOGLE_CLOUD_PROJECT"):
+        env_project = (_get_secret(env_var) or "").strip()
+        if env_project:
+            return env_project
+    vcfg = _vertex_config()
+    cfg_project = str(vcfg.get("project_id") or vcfg.get("project") or "").strip()
     return cfg_project or None
 
 
@@ -291,6 +295,9 @@ def has_vertex_credentials() -> bool:
     if _resolve_credentials_path(None):
         return True
     if _resolve_project_override():
+        return True
+    cloudsdk = os.environ.get("CLOUDSDK_CONFIG")
+    if cloudsdk and (os.path.isfile(os.path.join(cloudsdk, "application_default_credentials.json")) or os.path.isdir(cloudsdk)):
         return True
     return False
 

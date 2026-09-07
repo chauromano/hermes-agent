@@ -5384,11 +5384,17 @@ class APIServerAdapter(BasePlatformAdapter):
         # Soft-partial path: we have *some* text but the run did not complete
         # (e.g. truncation with partial buffered output). Still 200 but signal
         # truncation via finish_reason="length" + Hermes-specific extras.
+        actual_runtime = usage.get("runtime") if isinstance(usage, dict) else None
+        actual_model = (
+            actual_runtime.get("model")
+            if isinstance(actual_runtime, dict) and actual_runtime.get("model")
+            else model_name
+        )
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
             "created": created,
-            "model": model_name,
+            "model": actual_model or model_name,
             "choices": [
                 {
                     "index": 0,
@@ -5405,6 +5411,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "total_tokens": usage.get("total_tokens", 0),
             },
         }
+        if actual_model:
+            response_data["usage"]["used_model"] = actual_model
+        if actual_runtime:
+            response_data["runtime"] = actual_runtime
+            response_data["usage"]["runtime"] = actual_runtime
         if is_partial or is_failed or not completed:
             response_data["hermes"] = {
                 "completed": completed,
@@ -5551,9 +5562,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 finish_reason = "stop"
 
             # Finish chunk
+            actual_runtime = usage.get("runtime") if isinstance(usage, dict) else None
+            actual_model = (
+                actual_runtime.get("model")
+                if isinstance(actual_runtime, dict) and actual_runtime.get("model")
+                else getattr(agent_ref[0], "model", None) if agent_ref and agent_ref[0] else model
+            )
             finish_chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
-                "created": created, "model": model,
+                "created": created, "model": actual_model or model,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                 "usage": {
                     "prompt_tokens": usage.get("input_tokens", 0),
@@ -5561,6 +5578,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     "total_tokens": usage.get("total_tokens", 0),
                 },
             }
+            if actual_model:
+                finish_chunk["usage"]["used_model"] = actual_model
+            if actual_runtime:
+                finish_chunk["runtime"] = actual_runtime
+                finish_chunk["usage"]["runtime"] = actual_runtime
             if finish_reason != "stop":
                 finish_chunk["choices"][0]["delta"] = {}
                 if err_msg:

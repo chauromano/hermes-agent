@@ -43,9 +43,13 @@ _USAGE_FIELDS = (
     ("total_tokens", "session_total_tokens"))
 # Tool-progress event -> SSE payload fields (tool_name, preview, kwargs); key order is wire format.
 _FIXED_EVENT_FIELDS = {
-    "tool.started": lambda tool, preview, kw: {"tool": tool, "preview": preview},
+    "tool.started": lambda tool, preview, kw: {
+        "tool": tool, "preview": preview,
+        **({"args": kw["args"]} if kw.get("args") is not None else {})},
     "tool.completed": lambda tool, preview, kw: {
-        "tool": tool, "duration": round(kw.get("duration", 0), 3), "error": kw.get("is_error", False)},
+        "tool": tool, "duration": round(kw.get("duration", 0), 3), "error": kw.get("is_error", False),
+        **({"result": kw["result"]} if kw.get("result") is not None else {}),
+        **({"preview": preview} if preview is not None else {})},
     "reasoning.available": lambda tool, preview, kw: {"text": preview or ""}}
 
 
@@ -163,6 +167,8 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         # _thinking / subagent.tool / subagent_progress are deliberately dropped (UI noise);
         # lifecycle boundaries must land so clients can observe delegate_task failures.
+        if args is not None and "args" not in kwargs:
+            kwargs["args"] = args
         fields = _FIXED_EVENT_FIELDS.get(event_type)
         if fields is not None:
             _push(_run_event(run_id, event_type, **fields(tool_name, preview, kwargs)))

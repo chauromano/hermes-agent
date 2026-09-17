@@ -332,6 +332,7 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    request_workspace: Optional[str] = None
 
     @property
     def approval_session_key(self) -> str:
@@ -488,6 +489,16 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 self._run_statuses, self._run_owners)
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
+    run_workspace = (
+        request.headers.get("X-Hermes-Workspace", "").strip()
+        or (str(body.get("workspace")).strip() if isinstance(body, dict) and body.get("workspace") else "")
+        or None
+    )
+    run_profile = (
+        request.headers.get("X-Hermes-Profile", "").strip()
+        or (str(body.get("profile")).strip() if isinstance(body, dict) and body.get("profile") else "")
+        or _api_server._api_request_profile.get()
+    )
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history, session_history_delivery,
@@ -495,10 +506,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
-        request_profile=_api_server._api_request_profile.get(),
+        request_profile=run_profile,
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author,
+        request_workspace=run_workspace)
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -526,6 +538,23 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
     # (token, reset) pairs unwound in the finally block; bound only once each step succeeds.
     resets: list[tuple[Any, Callable]] = []
     with self._profile_scope(run.request_profile):
+        cwd_token = None
+        if run.request_workspace:
+            try:
+                from agent.runtime_cwd import set_session_cwd
+                cwd_token = set_session_cwd(run.request_workspace)
+            except Exception:
+                pass
+            try:
+                from tools.terminal_tool import record_session_cwd, register_task_env_overrides
+                record_session_cwd(effective_task_id, run.request_workspace)
+                if session_id:
+                    record_session_cwd(session_id, run.request_workspace)
+                register_task_env_overrides(effective_task_id, {"cwd": run.request_workspace})
+                if session_id:
+                    register_task_env_overrides(session_id, {"cwd": run.request_workspace})
+            except Exception:
+                pass
         try:
             # Contextvars, not process env: concurrent runs must not share identity.
             resets.append((set_current_session_key(run.approval_session_key), reset_current_session_key))
@@ -561,6 +590,20 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 user_message=run.user_message, conversation_history=run.conversation_history,
                 task_id=effective_task_id, **author_kwargs)
         finally:
+            if run.request_workspace:
+                try:
+                    from tools.terminal_tool import clear_task_env_overrides
+                    clear_task_env_overrides(effective_task_id)
+                    if session_id:
+                        clear_task_env_overrides(session_id)
+                except Exception:
+                    pass
+            if cwd_token is not None:
+                try:
+                    from agent.runtime_cwd import _SESSION_CWD
+                    _SESSION_CWD.reset(cwd_token)
+                except Exception:
+                    pass
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
             # Declared-conversation binding, same precedence gate as _run_agent.

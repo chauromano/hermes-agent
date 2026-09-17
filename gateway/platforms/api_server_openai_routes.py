@@ -500,11 +500,15 @@ class OpenAICompatRoutesMixin:
             model_alias=model_name)
         if selection_error is not None:
             return selection_error
+        request_workspace = request.headers.get("X-Hermes-Workspace", "").strip()
+        request_profile = request.headers.get("X-Hermes-Profile", "").strip()
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
             gateway_session_key=gateway_session_key, **agent_overrides, route=route,
             relay_metadata=relay_metadata,
+            workspace=request_workspace or None,
+            profile=request_profile or None,
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
             # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
             # and the client can resume the session by sending it again). A fingerprint-derived
@@ -696,6 +700,7 @@ class OpenAICompatRoutesMixin:
                 if isinstance(actual_runtime, dict) and actual_runtime.get("model")
                 else getattr(agent_ref[0], "model", None) if agent_ref and agent_ref[0] else model
             )
+            finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error)
             finish_chunk = _chunk({}, finish_reason, usage=_chat_usage_payload(usage))
             if actual_model:
                 finish_chunk["model"] = actual_model

@@ -3595,7 +3595,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _bind_api_server_session(
         *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
         browser_control_principal: str = "", browser_control_transport_family: str = "",
-        session_history_delivery: str = "") -> list:
+        session_history_delivery: str = "", cwd: str = "") -> list:
         """Bind an API turn with push disabled and history delivery default-denied.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
@@ -3609,7 +3609,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
             profile=profile, browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
+            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery,
+            cwd=cwd)
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[Dict[str, Any]], requested_runtime: Optional[Dict[str, Any]],
@@ -3685,7 +3686,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None) -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None,
+        workspace: Optional[str] = None, profile: Optional[str] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3696,20 +3698,41 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``turn_author`` only labels the turn for memory attribution. It grants nothing."""
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
-        request_profile = _api_request_profile.get()
+        request_profile = (profile or "").strip() or _api_request_profile.get()
+        request_workspace = (workspace or "").strip() or None
         request_browser_control_principal = _api_request_browser_control_principal.get()
         request_browser_control_transport_family = _api_request_browser_control_transport_family.get()
 
         def _run():
             from gateway.session_context import clear_session_vars
             with self._profile_scope(request_profile):
+                cwd_token = None
+                if request_workspace:
+                    try:
+                        from agent.runtime_cwd import set_session_cwd
+                        cwd_token = set_session_cwd(request_workspace)
+                    except Exception:
+                        pass
                 tokens = self._bind_api_server_session(
                     chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "", profile=request_profile or "",
                     browser_control_principal=request_browser_control_principal,
                     browser_control_transport_family=request_browser_control_transport_family,
-                    session_history_delivery=session_history_delivery)
+                    session_history_delivery=session_history_delivery,
+                    cwd=request_workspace or "")
                 agent = None
+                effective_task_id = session_id or str(uuid.uuid4())
+                if request_workspace:
+                    try:
+                        from tools.terminal_tool import record_session_cwd, register_task_env_overrides
+                        record_session_cwd(effective_task_id, request_workspace)
+                        if session_id:
+                            record_session_cwd(session_id, request_workspace)
+                        register_task_env_overrides(effective_task_id, {"cwd": request_workspace})
+                        if session_id:
+                            register_task_env_overrides(session_id, {"cwd": request_workspace})
+                    except Exception:
+                        pass
                 try:
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
@@ -3778,6 +3801,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         if bind_declared_conversation:
                             self._bind_declared_conversation(
                                 getattr(agent, "session_id", None) or session_id, gateway_session_key)
+                    if request_workspace:
+                        try:
+                            from tools.terminal_tool import clear_task_env_overrides
+                            clear_task_env_overrides(effective_task_id)
+                            if session_id:
+                                clear_task_env_overrides(session_id)
+                        except Exception:
+                            pass
+                    if cwd_token is not None:
+                        try:
+                            from agent.runtime_cwd import _SESSION_CWD
+                            _SESSION_CWD.reset(cwd_token)
+                        except Exception:
+                            pass
                     clear_session_vars(tokens)
         self._activate_admitted_request()
         self._inflight_agent_runs += 1

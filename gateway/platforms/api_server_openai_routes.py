@@ -449,6 +449,14 @@ class OpenAICompatRoutesMixin:
         if not _content_has_visible_payload(user_message):
             return _invalid_request("No user message found in messages")
 
+        request_workspace = request.headers.get("X-Hermes-Workspace", "").strip()
+        from gateway.platforms.api_server import _api_request_profile
+        request_profile = (
+            request.headers.get("X-Hermes-Profile", "").strip()
+            or _api_request_profile.get()
+            or None
+        )
+
         # X-Hermes-Session-Key scopes long-term memory per channel; independent of
         # X-Hermes-Session-Id (the key persists across transcripts, the id rotates on /new).
         gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -473,7 +481,7 @@ class OpenAICompatRoutesMixin:
                 return _invalid_request("Session ID too long")
             session_id = provided_session_id
             try:
-                db = await self._ensure_session_db_async()
+                db = await self._ensure_session_db_async(profile=request_profile)
                 if db is not None:
                     # #98619/#13437: a client-addressed id from before a compression rotation
                     # must adopt the live continuation tip — history loads from it, the turn and
@@ -481,11 +489,13 @@ class OpenAICompatRoutesMixin:
                     # on the tip is what this continuation consumes. Same canonical resolution
                     # the delivery writer (gateway/wake.py) and /v1/runs use; fails open.
                     from gateway.platforms.api_server_runs import _resolve_live_session_id
-                    session_id = await _resolve_live_session_id(self, provided_session_id)
+                    session_id = await _resolve_live_session_id(self, provided_session_id, profile=request_profile)
                     history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
             except Exception as e:
-                logger.warning("Failed to load session history for %s: %s", session_id, e)
+                logger.warning("Failed to load session history for %s (profile=%s): %s", session_id, request_profile, e)
                 history = []
+            if not history and conversation_messages[:-1]:
+                history = conversation_messages[:-1]
         else:
             # Stable id from the conversation fingerprint so Open WebUI-style clients map onto
             # one Hermes session.
@@ -500,8 +510,6 @@ class OpenAICompatRoutesMixin:
             model_alias=model_name)
         if selection_error is not None:
             return selection_error
-        request_workspace = request.headers.get("X-Hermes-Workspace", "").strip()
-        request_profile = request.headers.get("X-Hermes-Profile", "").strip()
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,

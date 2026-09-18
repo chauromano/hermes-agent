@@ -1692,26 +1692,36 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             except Exception:
                 logger.debug("Failed to close API-server SessionDB", exc_info=True)
 
-    def _ensure_session_db(self):
+    def _resolve_profile_home(self, profile: Optional[str] = None):
+        target_profile = (profile or "").strip() or _api_request_profile.get()
+        if target_profile and target_profile != "default":
+            try:
+                from hermes_cli.profiles import get_profile_dir
+                return get_profile_dir(target_profile)
+            except Exception:
+                pass
+        from hermes_constants import get_hermes_home
+        return get_hermes_home()
+
+    def _ensure_session_db(self, profile: Optional[str] = None):
         """SessionDB for the active profile home (the runtime scope redirects ``get_hermes_home()``
         per profile). Sync, for ``_create_agent``; handlers use ``_ensure_session_db_async``."""
         if self._session_db is not None:
             return self._session_db
         try:
-            from hermes_constants import get_hermes_home
-            return self._open_and_cache_session_db(get_hermes_home())
+            home = self._resolve_profile_home(profile)
+            return self._open_and_cache_session_db(home)
         except Exception as e:
             logger.debug("SessionDB unavailable for API server: %s", e)
             return None
 
-    async def _ensure_session_db_async(self):
+    async def _ensure_session_db_async(self, profile: Optional[str] = None):
         """Async variant: the profile home is captured on the loop thread (its scope is invisible
         inside ``to_thread``), only the blocking open runs in the worker, single-flight locked."""
         if self._session_db is not None:
             return self._session_db
         try:
-            from hermes_constants import get_hermes_home
-            home = get_hermes_home()
+            home = self._resolve_profile_home(profile)
             key = str(home)
             with self._session_db_cache_lock:
                 cached = self._session_dbs.get(key)
@@ -2756,14 +2766,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None, _error_response(f"Session not found: {session_id}", 404, code="session_not_found")
         return session, None
 
-    async def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
-        db = await self._ensure_session_db_async()
+    async def _conversation_history_for_session(self, session_id: str, profile: Optional[str] = None) -> List[Dict[str, Any]]:
+        db = await self._ensure_session_db_async(profile=profile)
         if db is None:
             return []
         try:
             return await asyncio.to_thread(db.get_messages_as_conversation, session_id)
         except Exception as exc:
-            logger.warning("Failed to load session history for %s: %s", session_id, exc)
+            logger.warning("Failed to load session history for %s (profile=%s): %s", session_id, profile, exc)
             return []
 
     @_require_auth

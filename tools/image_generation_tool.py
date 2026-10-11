@@ -630,53 +630,151 @@ def _declared_controls(provider, controls: Optional[Dict[str, Any]]) -> Optional
     return {name: value for name, value in controls.items() if name in declared} or None
 
 
+def _read_configured_image_fallback_provider() -> Optional[str]:
+    """Return ``image_gen.fallback_provider`` from config.yaml, or None."""
+    val = _read_image_gen_key("fallback_provider")
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
+
+
+def _read_configured_image_fallback_model() -> Optional[str]:
+    """Return ``image_gen.fallback_model`` or ``image_gen.<fallback_provider>.model`` from config.yaml, or None."""
+    explicit = _read_image_gen_key("fallback_model")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    fallback_p = _read_configured_image_fallback_provider()
+    if fallback_p:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+            scoped = section.get(fallback_p) if isinstance(section, dict) else None
+            if isinstance(scoped, dict) and isinstance(scoped.get("model"), str) and scoped.get("model").strip():
+                return scoped["model"].strip()
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
+def _execute_provider_generate(
+    provider_name: str,
+    prompt: str,
+    aspect_ratio: str,
+    image_url: Optional[str] = None,
+    reference_image_urls: Optional[list] = None,
+    upscale: Optional[bool] = None,
+    controls: Optional[Dict[str, Any]] = None,
+    model: Optional[str] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[str]]:
+    """Execute ``provider.generate()``; returns ``(result_dict, error_message, error_type)``.
+    When successful, ``error_message`` and ``error_type`` are None."""
+    try:
+        provider = _get_plugin_provider(provider_name)
+    except Exception as exc:
+        logger.debug("image_gen plugin lookup skipped for '%s': %s", provider_name, exc)
+        provider = None
+    if provider is None:
+        try:
+            provider = _get_plugin_provider(provider_name, force=True)
+        except Exception as exc:
+            logger.debug("image_gen plugin force-refresh skipped for '%s': %s", provider_name, exc)
+    if provider is None:
+        return None, (
+            f"image_gen.provider='{provider_name}' is set but no plugin registered that name. "
+            f"Run `hermes plugins list` to see available image gen backends."
+        ), "provider_not_registered"
+
+    pname = getattr(provider, "name", provider_name)
+    kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+    try:
+        _add_provider_kwargs(
+            kwargs,
+            image_url,
+            reference_image_urls,
+            upscale,
+            model=model,
+            controls=_declared_controls(provider, controls),
+        )
+        result = provider.generate(**kwargs)
+        if not isinstance(result, dict):
+            return None, f"Provider '{pname}' returned a non-dict result", "provider_contract"
+        if not result.get("success", False):
+            err = result.get("error") or "Unknown error"
+            err_type = result.get("error_type") or "api_error"
+            return result, f"Provider '{pname}' failed: {err}", err_type
+        return result, None, None
+    except Exception as exc:
+        is_type_error = isinstance(exc, TypeError)
+        if is_type_error and ("image_url" in kwargs or "reference_image_urls" in kwargs):
+            logger.warning("image_gen provider '%s' rejected image-to-image kwargs: %s", pname, exc)
+            return None, (
+                f"Provider '{pname}' does not support image-to-image / editing (its generate() "
+                f"signature is out of date with the image_generate schema). Omit image_url for "
+                f"text-to-image, or pick a backend that supports editing via `hermes tools` → "
+                f"Image Generation."
+            ), "modality_unsupported"
+        logger.warning("Image gen provider '%s' raised%s: %s", pname,
+                       " TypeError" if is_type_error else "", exc)
+        return None, f"Provider '{pname}' error: {exc}", "provider_exception"
+
+
 def _dispatch_to_plugin_provider(
     prompt: str, aspect_ratio: str, image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
     controls: Optional[Dict[str, Any]] = None):
-    """JSON result from the selected plugin provider, or ``None`` to fall through to in-tree FAL
-    (provider unset / ``"fal"`` / ``"nous"``). Providers without ``upscale`` ignore it via ``**kwargs``."""
+    """JSON result from the selected plugin provider, with automatic fallback when configured,
+    or ``None`` to fall through to in-tree FAL (provider unset / ``"fal"`` / ``"nous"``). Providers
+    without ``upscale`` ignore it via ``**kwargs``."""
     configured = _plugin_provider_name()
     if configured is None:
         return None
-    try:
-        provider = _get_plugin_provider(configured)
-    except Exception as exc:
-        logger.debug("image_gen plugin dispatch skipped: %s", exc)
-        return None
-    if provider is None:
-        # Long-lived sessions may have discovered plugins before a bundled backend
-        # was patched in or config changed: retry once with a forced refresh.
-        try:
-            provider = _get_plugin_provider(configured, force=True)
-        except Exception as exc:
-            logger.debug("image_gen plugin force-refresh skipped: %s", exc)
-    if provider is None:
-        return _provider_error(
-            f"image_gen.provider='{configured}' is set but no plugin registered that name. "
-            f"Run `hermes plugins list` to see available image gen backends.", "provider_not_registered")
-    pname = getattr(provider, "name", "?")
-    kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
-    try:
-        _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale,
-                             model=_read_configured_image_model(), controls=_declared_controls(provider, controls))
-        result = provider.generate(**kwargs)
-    except Exception as exc:
-        # A TypeError from generate() predating image_url support (third-party plugin not yet
-        # updated): text-to-image keeps working; surface a clear note when an edit was requested.
-        is_type_error = isinstance(exc, TypeError)
-        if is_type_error and ("image_url" in kwargs or "reference_image_urls" in kwargs):
-            logger.warning("image_gen provider '%s' rejected image-to-image kwargs "
-                           "(signature too narrow): %s", pname, exc)
-            return _provider_error(
-                f"Provider '{pname}' does not support image-to-image / editing (its generate() "
-                f"signature is out of date with the image_generate schema). Omit image_url for "
-                f"text-to-image, or pick a backend that supports editing via `hermes tools` → "
-                f"Image Generation.", "modality_unsupported")
-        logger.warning("Image gen provider '%s' raised%s: %s", pname,
-                       " TypeError" if is_type_error else "", exc)
-        return _provider_error(f"Provider '{pname}' error: {exc}", "provider_exception")
-    return _provider_result(result, "Provider returned a non-dict result")
+
+    primary_model = _read_configured_image_model()
+    result, err_msg, err_type = _execute_provider_generate(
+        configured, prompt, aspect_ratio, image_url, reference_image_urls, upscale, controls, model=primary_model
+    )
+    if result is not None and result.get("success", False):
+        return _provider_result(result, "Provider returned a non-dict result")
+
+    # If primary provider failed, check for configured fallback_provider
+    fallback_name = _read_configured_image_fallback_provider()
+    if fallback_name and fallback_name != configured:
+        logger.info(
+            "Primary image_gen provider '%s' failed (%s); attempting fallback to '%s'",
+            configured, err_msg or "failed", fallback_name
+        )
+        if fallback_name in ("fal", NOUS_MANAGED_PROVIDER):
+            sources = dict(image_url=image_url, reference_image_urls=reference_image_urls,
+                           upscale=upscale if isinstance(upscale, bool) else None)
+            try:
+                fb_raw = image_generate_tool(prompt, aspect_ratio, **sources)
+                fb_res = json.loads(fb_raw) if isinstance(fb_raw, str) else fb_raw
+                if isinstance(fb_res, dict) and fb_res.get("success", False):
+                    fb_res["fallback_used"] = True
+                    fb_res["primary_provider"] = configured
+                    fb_res["primary_error"] = err_msg
+                    return json.dumps(fb_res)
+            except Exception as exc:
+                logger.warning("FAL fallback failed: %s", exc)
+        else:
+            fallback_model = _read_configured_image_fallback_model()
+            fb_result, fb_err_msg, fb_err_type = _execute_provider_generate(
+                fallback_name, prompt, aspect_ratio, image_url, reference_image_urls, upscale, controls, model=fallback_model
+            )
+            if fb_result is not None and fb_result.get("success", False):
+                fb_result.setdefault("fallback_used", True)
+                fb_result.setdefault("primary_provider", configured)
+                fb_result.setdefault("primary_error", err_msg)
+                logger.info("Image generation succeeded using fallback provider '%s'", fallback_name)
+                return _provider_result(fb_result, "Fallback provider returned a non-dict result")
+            logger.warning("Fallback image_gen provider '%s' also failed: %s", fallback_name, fb_err_msg)
+            combined_err = f"Primary provider '{configured}' failed ({err_msg}). Fallback provider '{fallback_name}' also failed ({fb_err_msg})."
+            return _provider_error(combined_err, fb_err_type or err_type or "all_providers_failed")
+
+    if result is not None:
+        return _provider_result(result, "Provider returned a non-dict result")
+    return _provider_error(err_msg or "Provider failed", err_type or "provider_error")
 
 
 def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:

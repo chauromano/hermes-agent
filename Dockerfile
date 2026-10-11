@@ -295,6 +295,7 @@ COPY --link --chmod=a+rX,go-w . .
 # cached layer above; `--no-deps` makes this a fast egg-link creation with no
 # resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
+RUN uv pip install --no-cache-dir python-docx lxml openpyxl python-pptx xlsxwriter
 
 # Wire the exec shim and install-method stamp.  Files under /opt/hermes are
 # already root-owned (COPY, uv sync, npm install all run as root) and

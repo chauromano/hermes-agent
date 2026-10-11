@@ -111,6 +111,60 @@ def _normalize_path(path: str) -> str:
     return p.rstrip("/\\") or p
 
 
+def _seed_default_spaces(conn: sqlite3.Connection, db_path_str: str) -> None:
+    """Ensure all folders from hermes_default_spaces exist as projects if the directory exists."""
+    default_spaces_dir = None
+    for candidate in [Path("/workspace/hermes_default_spaces"), Path("D:/Workspace/hermes_default_spaces")]:
+        try:
+            if candidate.is_dir():
+                default_spaces_dir = candidate
+                break
+        except Exception:
+            pass
+    if default_spaces_dir is None:
+        return
+
+    try:
+        subdirs = sorted([d.name for d in default_spaces_dir.iterdir() if d.is_dir() and not d.name.startswith('.')])
+    except Exception:
+        return
+    if not subdirs:
+        return
+
+    existing_rows = conn.execute("SELECT slug, primary_path FROM projects").fetchall()
+    existing_slugs = {r[0] for r in existing_rows}
+    existing_paths = {os.path.normpath(r[1]).lower() if r[1] else "" for r in existing_rows}
+
+    posix = Path(db_path_str).as_posix()
+    profile_match = re.search(r"/profiles/([^/]+)/projects\.db", posix, re.IGNORECASE)
+    active_profile = profile_match.group(1) if profile_match else "hermes"
+    if active_profile == "default":
+        active_profile = "hermes"
+
+    now = _now()
+    with write_txn(conn):
+        for s in subdirs:
+            p_path = (default_spaces_dir / s).as_posix() if default_spaces_dir.as_posix().startswith('/') else str(default_spaces_dir / s)
+            if s not in existing_slugs and os.path.normpath(p_path).lower() not in existing_paths:
+                pid = f"p_{s}"
+                conn.execute(
+                    "INSERT INTO projects (id, slug, name, description, icon, color, board_slug, primary_path, created_at, archived) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                    (pid, s, s, None, None, None, None, p_path, now),
+                )
+                conn.execute(
+                    "INSERT INTO project_folders (project_id, path, label, is_primary, added_at) VALUES (?, ?, ?, 1, ?)",
+                    (pid, p_path, s, now),
+                )
+        active_row = conn.execute("SELECT value FROM project_meta WHERE key = ?", (_ACTIVE_META_KEY,)).fetchone()
+        if not active_row or not active_row[0]:
+            target_pid = f"p_{active_profile}" if active_profile in subdirs else "p_hermes"
+            conn.execute(
+                "INSERT OR REPLACE INTO project_meta (key, value) VALUES (?, ?)",
+                (_ACTIVE_META_KEY, target_pid),
+            )
+
+
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the per-profile projects DB.
 
@@ -129,6 +183,10 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
             if col not in cols:
                 _add_column_if_missing(conn, "projects", col, f"{col} TEXT")
         _INITIALIZED_PATHS.add(resolved)
+        try:
+            _seed_default_spaces(conn, resolved)
+        except Exception:
+            pass
 
     return open_db(path, db_label="projects.db", foreign_keys=True, initialize=_initialize)
 

@@ -473,6 +473,10 @@ ENV XDG_RUNTIME_DIR=/tmp/hermes-runtime
 # the opt-out env var (HERMES_DOCKER_EXEC_AS_ROOT=1).
 COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
 COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-dispatch.sh
+RUN ln -sf /opt/hermes/bin/hermes /usr/local/bin/hermes && \
+    mkdir -p /etc/profile.d && \
+    printf 'export PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"\n' > /etc/profile.d/hermes.sh && \
+    chmod 0644 /etc/profile.d/hermes.sh
 
 # Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
 # the venv bin onto PATH; Architecture B's main-wrapper.sh does the

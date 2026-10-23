@@ -24,6 +24,8 @@ ENV/
 node_modules
 **/node_modules
 .venv
+.venv-*/
+/%SystemDrive%/
 **/.venv
 .notebooklm-cli-venv/
 .notebooklm-playwright/

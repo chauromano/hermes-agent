@@ -76,13 +76,12 @@ def process_birth(proc) -> float:
     Raises ``psutil.Error`` like ``create_time()``.
     """
     import psutil
-    if getattr(psutil, "MACOS", False):
-        platform_proc = getattr(proc, "_proc", None)
-        if platform_proc is not None:
-            try:
-                return float(platform_proc.create_time(monotonic=True))
-            except TypeError:  # a psutil without the monotonic read: fall back to the adjusted one
-                pass
+    platform_proc = getattr(proc, "_proc", None)
+    if platform_proc is not None:
+        try:
+            return float(platform_proc.create_time(monotonic=True))
+        except (TypeError, AttributeError):  # a psutil without the monotonic read: fall back to the adjusted one
+            pass
     return float(proc.create_time())
 
 

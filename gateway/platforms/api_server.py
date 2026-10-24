@@ -2481,23 +2481,37 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         refresh = _coerce_request_bool(request.query.get("refresh"), default=False)
         include_unconfigured = _coerce_request_bool(
             request.query.get("include_unconfigured"), default=False)
+        include_all = _coerce_request_bool(
+            request.query.get("include_all"), default=False)
         target_profile = (request.query.get("profile") or "").strip() or _api_request_profile.get()
 
         try:
+            from hermes_cli.config import load_config
             from hermes_cli.inventory import build_model_options_payload, load_picker_context
             from hermes_cli.web_server_profiles import _config_profile_scope
 
             def _build_payload() -> dict[str, Any]:
                 with _config_profile_scope(target_profile):
-                    return build_model_options_payload(
+                    payload = build_model_options_payload(
                         load_picker_context(),
                         include_unconfigured=include_unconfigured,
                         refresh=refresh,
                     )
+                    cfg = load_config()
+                    raw_visible = (
+                        (cfg.get("model_catalog") or {}).get("visible_models")
+                        or (cfg.get("model") or {}).get("visible_models")
+                        or cfg.get("visible_models")
+                    )
+                    visible_models = [str(x).strip() for x in raw_visible] if isinstance(raw_visible, list) else []
+                    payload["visible_models"] = visible_models
+                    return payload
 
             raw = await asyncio.to_thread(_build_payload)
             current_provider = str(raw.get("provider") or "").strip()
             current_model = str(raw.get("model") or "").strip()
+            visible_models = raw.get("visible_models") or []
+            visible_set = {x.lower() for x in visible_models if x}
 
             providers_out = []
             flat_models = []
@@ -2520,30 +2534,35 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     mname = str(m.get("name") or mid if isinstance(m, dict) else mid).strip()
                     is_curr_m = (is_curr_p and mid == current_model)
                     mcaps = caps.get(mid, {}) if isinstance(caps, dict) else {}
+                    is_visible = (not visible_set) or (mid.lower() in visible_set) or is_curr_m
                     entry = {
                         "id": mid,
                         "name": mname,
                         "provider": slug,
                         "provider_label": name,
                         "is_current": is_curr_m,
+                        "is_visible": is_visible,
                         "capabilities": mcaps,
                     }
-                    models_for_p.append(entry)
-                    flat_models.append(entry)
+                    if include_all or is_visible:
+                        models_for_p.append(entry)
+                        flat_models.append(entry)
 
-                providers_out.append({
-                    "id": slug,
-                    "label": name,
-                    "authenticated": auth,
-                    "is_current": is_curr_p,
-                    "total_models": len(models_for_p),
-                    "models": models_for_p,
-                })
+                if models_for_p:
+                    providers_out.append({
+                        "id": slug,
+                        "label": name,
+                        "authenticated": auth,
+                        "is_current": is_curr_p,
+                        "total_models": len(models_for_p),
+                        "models": models_for_p,
+                    })
 
             response_payload = {
                 "ok": True,
                 "current_provider": current_provider,
                 "current_model": current_model,
+                "visible_models": visible_models,
                 "providers": providers_out,
                 "models": flat_models,
                 "data": flat_models,

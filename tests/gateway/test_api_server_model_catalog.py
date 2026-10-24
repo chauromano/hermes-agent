@@ -96,6 +96,63 @@ async def test_handle_model_catalog_success(adapter):
 
 
 @pytest.mark.asyncio
+async def test_handle_model_catalog_visible_models_filter(adapter):
+    mock_payload = {
+        "provider": "openai-codex",
+        "model": "gpt-6.1-sol",
+        "providers": [
+            {
+                "slug": "openai-codex",
+                "name": "ChatGPT or Codex Subscription",
+                "authenticated": True,
+                "is_current": True,
+                "models": ["gpt-6.1-sol", "gpt-6-astra"],
+                "capabilities": {},
+            },
+            {
+                "slug": "vertex",
+                "name": "Google Vertex AI",
+                "authenticated": True,
+                "is_current": False,
+                "models": ["google/gemini-3.8-flash"],
+                "capabilities": {},
+            },
+        ],
+    }
+
+    mock_cfg = {
+        "model_catalog": {
+            "visible_models": ["google/gemini-3.8-flash"],
+        }
+    }
+
+    with patch("hermes_cli.inventory.build_model_options_payload", return_value=mock_payload), \
+         patch("hermes_cli.inventory.load_picker_context", return_value=MagicMock()), \
+         patch("hermes_cli.config.load_config", return_value=mock_cfg):
+        # 1. Default request should filter to visible + current_model
+        req = _make_request(adapter)
+        resp = await adapter._handle_model_catalog(req)
+        assert resp.status == 200
+        data = json.loads(resp.text)
+        assert len(data["models"]) == 2  # gpt-6.1-sol (current) and gemini (visible)
+        model_ids = [m["id"] for m in data["models"]]
+        assert "gpt-6-astra" not in model_ids
+        assert "google/gemini-3.8-flash" in model_ids
+        assert "gpt-6.1-sol" in model_ids
+
+        # 2. Request with include_all=true should return all models with is_visible flags
+        req_all = _make_request(adapter, query={"include_all": "true"})
+        resp_all = await adapter._handle_model_catalog(req_all)
+        assert resp_all.status == 200
+        data_all = json.loads(resp_all.text)
+        assert len(data_all["models"]) == 3
+        astra = next(m for m in data_all["models"] if m["id"] == "gpt-6-astra")
+        assert astra["is_visible"] is False
+        gemini = next(m for m in data_all["models"] if m["id"] == "google/gemini-3.8-flash")
+        assert gemini["is_visible"] is True
+
+
+@pytest.mark.asyncio
 async def test_handle_model_catalog_unauthorized(adapter):
     req = _make_request(adapter, headers={"Authorization": "Bearer wrong-key"})
     resp = await adapter._handle_model_catalog(req)

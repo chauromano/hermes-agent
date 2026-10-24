@@ -168,6 +168,81 @@ async def get_model_options(
         return await run_in_threadpool(_build_payload_scoped)
 
 
+@router.get("/api/model/catalog")
+async def get_model_catalog(
+    profile: Optional[str] = None,
+    refresh: bool = False,
+    include_unconfigured: bool = False,
+):
+    """Structured model catalog for web/workspace interfaces.
+    Returns active profile's configured and authenticated models without exposing secrets."""
+    with http_failure("GET /api/model/catalog failed", 500, detail="Failed to build model catalog"):
+        from hermes_cli.inventory import build_model_options_payload, load_picker_context
+
+        def _build_payload_scoped() -> dict:
+            with _config_profile_scope(profile):
+                raw = build_model_options_payload(
+                    load_picker_context(),
+                    include_unconfigured=bool(include_unconfigured),
+                    refresh=bool(refresh),
+                )
+                current_provider = str(raw.get("provider") or "").strip()
+                current_model = str(raw.get("model") or "").strip()
+
+                providers_out = []
+                flat_models = []
+
+                for p in raw.get("providers", []):
+                    slug = str(p.get("slug") or "").strip()
+                    if not slug:
+                        continue
+                    name = str(p.get("name") or slug).strip()
+                    auth = bool(p.get("authenticated", False))
+                    is_curr_p = bool(p.get("is_current", False)) or (slug == current_provider)
+                    raw_models = p.get("models") or []
+                    caps = p.get("capabilities") or {}
+
+                    models_for_p = []
+                    for m in raw_models:
+                        mid = str(m.get("id") if isinstance(m, dict) else m).strip()
+                        if not mid:
+                            continue
+                        mname = str(m.get("name") or mid if isinstance(m, dict) else mid).strip()
+                        is_curr_m = (is_curr_p and mid == current_model)
+                        mcaps = caps.get(mid, {}) if isinstance(caps, dict) else {}
+                        entry = {
+                            "id": mid,
+                            "name": mname,
+                            "provider": slug,
+                            "provider_label": name,
+                            "is_current": is_curr_m,
+                            "capabilities": mcaps,
+                        }
+                        models_for_p.append(entry)
+                        flat_models.append(entry)
+
+                    providers_out.append({
+                        "id": slug,
+                        "label": name,
+                        "authenticated": auth,
+                        "is_current": is_curr_p,
+                        "total_models": len(models_for_p),
+                        "models": models_for_p,
+                    })
+
+                return {
+                    "ok": True,
+                    "current_provider": current_provider,
+                    "current_model": current_model,
+                    "providers": providers_out,
+                    "models": flat_models,
+                    "data": flat_models,
+                    "object": "list",
+                }
+
+        return await run_in_threadpool(_build_payload_scoped)
+
+
 def _nous_recommended_default() -> dict:
     from hermes_cli.models import recommended_nous_default_model
     return recommended_nous_default_model()

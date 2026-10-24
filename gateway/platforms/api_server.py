@@ -79,6 +79,7 @@ _STATIC_FEATURE_FLAGS = {
 _CAPABILITY_ENDPOINTS = (
     ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),
     ("models", ("GET", "/v1/models")), ("model_options", ("GET", "/api/model/options")),
+    ("model_catalog", ("GET", "/api/model/catalog")),
     ("chat_completions", ("POST", "/v1/chat/completions")),
     ("responses", ("POST", "/v1/responses")), ("runs", ("POST", "/v1/runs")),
     ("run_status", ("GET", "/v1/runs/{run_id}")),
@@ -1664,6 +1665,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("GET", "/v1/health", self._handle_health),
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
+            ("GET", "/api/model/catalog", self._handle_model_catalog),
             ("GET", "/v1/capabilities", self._handle_capabilities),
             # Browser-control (gated on browser.extension_control.enabled + API key): POST
             # mints a short-lived ticket, WS consumes it; artifacts are bounded + scope-bound.
@@ -2471,6 +2473,86 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception:
             logger.exception("[%s] GET /api/model/options failed", self.name)
             return _error_response("Failed to list model options.", 500, code="model_options_failed")
+
+    @_require_auth
+    async def _handle_model_catalog(self, request: web.Request) -> web.Response:
+        """GET /api/model/catalog — structured model catalog for web/workspace interfaces.
+        Returns active profile's configured and authenticated models without exposing secrets."""
+        refresh = _coerce_request_bool(request.query.get("refresh"), default=False)
+        include_unconfigured = _coerce_request_bool(
+            request.query.get("include_unconfigured"), default=False)
+        target_profile = (request.query.get("profile") or "").strip() or _api_request_profile.get()
+
+        try:
+            from hermes_cli.inventory import build_model_options_payload, load_picker_context
+            from hermes_cli.web_server_profiles import _config_profile_scope
+
+            def _build_payload() -> dict[str, Any]:
+                with _config_profile_scope(target_profile):
+                    return build_model_options_payload(
+                        load_picker_context(),
+                        include_unconfigured=include_unconfigured,
+                        refresh=refresh,
+                    )
+
+            raw = await asyncio.to_thread(_build_payload)
+            current_provider = str(raw.get("provider") or "").strip()
+            current_model = str(raw.get("model") or "").strip()
+
+            providers_out = []
+            flat_models = []
+
+            for p in raw.get("providers", []):
+                slug = str(p.get("slug") or "").strip()
+                if not slug:
+                    continue
+                name = str(p.get("name") or slug).strip()
+                auth = bool(p.get("authenticated", False))
+                is_curr_p = bool(p.get("is_current", False)) or (slug == current_provider)
+                raw_models = p.get("models") or []
+                caps = p.get("capabilities") or {}
+
+                models_for_p = []
+                for m in raw_models:
+                    mid = str(m.get("id") if isinstance(m, dict) else m).strip()
+                    if not mid:
+                        continue
+                    mname = str(m.get("name") or mid if isinstance(m, dict) else mid).strip()
+                    is_curr_m = (is_curr_p and mid == current_model)
+                    mcaps = caps.get(mid, {}) if isinstance(caps, dict) else {}
+                    entry = {
+                        "id": mid,
+                        "name": mname,
+                        "provider": slug,
+                        "provider_label": name,
+                        "is_current": is_curr_m,
+                        "capabilities": mcaps,
+                    }
+                    models_for_p.append(entry)
+                    flat_models.append(entry)
+
+                providers_out.append({
+                    "id": slug,
+                    "label": name,
+                    "authenticated": auth,
+                    "is_current": is_curr_p,
+                    "total_models": len(models_for_p),
+                    "models": models_for_p,
+                })
+
+            response_payload = {
+                "ok": True,
+                "current_provider": current_provider,
+                "current_model": current_model,
+                "providers": providers_out,
+                "models": flat_models,
+                "data": flat_models,
+                "object": "list",
+            }
+            return web.json_response(response_payload)
+        except Exception:
+            logger.exception("[%s] GET /api/model/catalog failed", self.name)
+            return _error_response("Failed to build model catalog.", 500, code="model_catalog_failed")
 
     @_require_auth
     async def _handle_capabilities(self, request: web.Request) -> web.Response:

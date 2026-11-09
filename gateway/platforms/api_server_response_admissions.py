@@ -182,7 +182,17 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
     if body.get('truncation') == 'auto':
         history = _auto_truncate_response_history(history)
     declared_selected = not stored_session_id and bool(gateway_session_key)
-    session_id = stored_session_id or await asyncio.to_thread(
+    provided_session_id = (
+        (body.get('session_id') if isinstance(body, dict) else None)
+        or request.headers.get('X-Hermes-Session-Id', '').strip()
+        or None
+    )
+    if provided_session_id:
+        import re
+        from gateway.session import _is_path_unsafe
+        if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
+            provided_session_id = None
+    session_id = stored_session_id or provided_session_id or await asyncio.to_thread(
         adapter._declared_conversation_session, gateway_session_key) or str(uuid.uuid4())
     if durable_key and not stored_session_id and not gateway_session_key:
         session_id = 'response-' + hashlib.sha256(f'{scope}\0{key}'.encode()).hexdigest()

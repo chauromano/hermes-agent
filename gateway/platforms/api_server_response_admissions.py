@@ -195,6 +195,13 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
         ephemeral_system_prompt=instructions, session_id=session_id,
         gateway_session_key=gateway_session_key, bind_declared_conversation=declared_selected,
         **overrides, route=route, relay_metadata=_request_relay_metadata(body))
+    request_workspace = (
+        (body.get('workspace') if isinstance(body, dict) else None)
+        or (body.get('cwd') if isinstance(body, dict) else None)
+        or request.headers.get('X-Hermes-Workspace', '')
+    )
+    if isinstance(request_workspace, str) and request_workspace.strip():
+        run_kwargs['workspace'] = request_workspace.strip()
     if stored_session_id and stored_session_id != chain_root:
         run_kwargs['walked_from'] = chain_root  # the chain moved past its swept stored session
     if durable_key:

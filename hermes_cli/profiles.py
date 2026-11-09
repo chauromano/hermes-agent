@@ -433,7 +433,7 @@ def _existing_profile_dir(name: str) -> tuple[str, Path]:
 def get_profile_dir(name: str) -> Path:
     """Resolve a profile name to its HERMES_HOME directory."""
     canon = normalize_profile_name(name)
-    if canon == "default":
+    if canon in ("default", "general"):
         return _get_default_hermes_home()
     # The name becomes a path component under profiles/; refuse anything that
     # is not a valid profile id so every caller (WS params, /p/<profile>/
@@ -452,7 +452,7 @@ def profile_exists(name: str) -> bool:
         profile_dir = get_profile_dir(canon)
     except ValueError:
         return False
-    if canon == "default":
+    if canon in ("default", "general"):
         return True
     return named_profile_is_live(profile_dir)
 
